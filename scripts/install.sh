@@ -10,7 +10,9 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+rm -rf build dist src/huvcli.egg-info
 python3 -m pip install --upgrade .
+rm -rf build dist src/huvcli.egg-info
 
 if [ "${HUV_API_KEY:-}" = "" ]; then
   echo "HUV_API_KEY not set. Add this to your shell profile:"

@@ -17,6 +17,8 @@ function Require-Command($Name) {
 
 Require-Command python
 
+Remove-Item -Recurse -Force -LiteralPath "build", "dist", "src\huvcli.egg-info" -ErrorAction SilentlyContinue
+
 $InstallArgs = @("-m", "pip", "install")
 if ($Editable) {
     $InstallArgs += "-e"
@@ -28,6 +30,7 @@ $InstallArgs += "."
 
 Write-Host "Installing Huv CLI from $RepoRoot"
 python @InstallArgs
+Remove-Item -Recurse -Force -LiteralPath "build", "dist", "src\huvcli.egg-info" -ErrorAction SilentlyContinue
 
 if ($ApiKey) {
     [Environment]::SetEnvironmentVariable("HUV_API_KEY", $ApiKey, "User")

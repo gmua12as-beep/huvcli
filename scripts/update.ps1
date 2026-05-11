@@ -17,8 +17,11 @@ if (Test-Path ".git") {
     }
 }
 
+Remove-Item -Recurse -Force -LiteralPath "build", "dist", "src\huvcli.egg-info" -ErrorAction SilentlyContinue
+
 Write-Host "Reinstalling Huv CLI..."
 python -m pip install --upgrade .
+Remove-Item -Recurse -Force -LiteralPath "build", "dist", "src\huvcli.egg-info" -ErrorAction SilentlyContinue
 
 Write-Host ""
 huv --version
