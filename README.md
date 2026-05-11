@@ -35,6 +35,8 @@ huv "explain this repo"
 huv chat
 huv models
 huv assets
+huv history
+huv prefs
 ```
 
 Huv reads [HUV.md](HUV.md) from the current project when present and adds it to
@@ -51,6 +53,22 @@ and `Editing...`, not full file contents. Use `--verbose` when debugging.
 
 The agent prefers small unified-diff patches for edits. Commands that look
 destructive are blocked unless the model explicitly marks them as intentional.
+
+## Workspace Storage
+
+Huv saves per-project state in `.huvcli/` inside the project where you run it:
+
+- `prefs.json` stores Huv preferences.
+- `conversations.jsonl` stores prompts, final answers, and compact tool summaries.
+
+It does not store API keys or raw tool/file outputs. Use `--no-save` for a
+single private run.
+
+```powershell
+huv history
+huv prefs
+huv prefs set save_history false
+```
 
 ## Config
 

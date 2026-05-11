@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .provider import ApiClient
+from .storage import append_history, ensure_workspace
 from .tools import ToolContext, call_tool
 
 
@@ -18,9 +19,10 @@ Use tools by replying with strict JSON only:
 {"action":"tool","tool":"run_command","args":{"command":"python -m pytest"}}
 {"action":"tool","tool":"run_command","args":{"command":"Remove-Item old.txt","dangerous":true}}
 When finished:
-{"action":"final","text":"short summary"}
+{"action":"final","text":"Concrete answer with what you found, what you changed or recommend, and next steps."}
 Return exactly one JSON object per reply. Prose outside JSON is ignored.
 Prefer apply_patch for edits. Read files before editing. Keep changes small and explain results at end.
+Never use placeholder text such as "short summary". Final text must be useful to the user.
 """
 
 
@@ -91,9 +93,37 @@ def _result_summary(tool: str, result: str) -> str:
     return "Done."
 
 
-def run_agent(prompt: str, cwd: Path, yes: bool = False, max_steps: int = 30, verbose: bool = False) -> str:
+def _is_bad_final(answer: str) -> bool:
+    normalized = " ".join(answer.strip().lower().split())
+    if not normalized:
+        return True
+    placeholders = {
+        "short summary",
+        "summary",
+        "done",
+        "complete",
+        "finished",
+        "ok",
+    }
+    if normalized in placeholders:
+        return True
+    return len(answer.strip()) < 30
+
+
+def run_agent(
+    prompt: str,
+    cwd: Path,
+    yes: bool = False,
+    max_steps: int = 30,
+    verbose: bool = False,
+    save: bool = True,
+) -> str:
     client = ApiClient()
     ctx = ToolContext(cwd=cwd, yes=yes, verbose=verbose)
+    prefs = ensure_workspace(cwd)
+    if not save:
+        prefs["save_history"] = False
+    tool_log: list[dict[str, str]] = []
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT + _project_guidance(cwd)},
         {"role": "user", "content": prompt},
@@ -112,9 +142,26 @@ def run_agent(prompt: str, cwd: Path, yes: bool = False, max_steps: int = 30, ve
             )
             continue
         if action.get("action") == "final":
-            return str(action.get("text", ""))
+            answer = str(action.get("text", ""))
+            if _is_bad_final(answer):
+                print("Planning summary...")
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "That final answer was too short or placeholder text. "
+                            "Reply with a real, helpful final JSON object. Include concrete findings, "
+                            "what you checked, and recommended next steps."
+                        ),
+                    }
+                )
+                continue
+            append_history(cwd, prompt, answer, tool_log, prefs)
+            return answer
         if action.get("action") != "tool":
-            return f"Unknown action: {reply}"
+            answer = f"Unknown action: {reply}"
+            append_history(cwd, prompt, answer, tool_log, prefs)
+            return answer
         tool_name = str(action["tool"])
         print(_status_for(tool_name))
         try:
@@ -124,6 +171,10 @@ def run_agent(prompt: str, cwd: Path, yes: bool = False, max_steps: int = 30, ve
         if verbose:
             print(f"\n[{tool_name}]\n{result[:4000]}\n")
         else:
-            print(_result_summary(tool_name, result))
+            summary = _result_summary(tool_name, result)
+            print(summary)
+        tool_log.append({"tool": tool_name, "summary": _result_summary(tool_name, result)})
         messages.append({"role": "user", "content": f"Tool result:\n{result}"})
-    return "Stopped: max steps reached"
+    answer = "Stopped: max steps reached"
+    append_history(cwd, prompt, answer, tool_log, prefs)
+    return answer

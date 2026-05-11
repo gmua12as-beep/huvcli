@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from huvcli.agent import _parse_action
+from huvcli.agent import _is_bad_final, _parse_action
 
 
 class ParseActionTests(unittest.TestCase):
@@ -19,3 +19,8 @@ class ParseActionTests(unittest.TestCase):
     def test_rejects_missing_json(self) -> None:
         with self.assertRaises(json.JSONDecodeError):
             _parse_action("no object")
+
+    def test_rejects_placeholder_final(self) -> None:
+        self.assertTrue(_is_bad_final("short summary"))
+        self.assertTrue(_is_bad_final("done"))
+        self.assertFalse(_is_bad_final("I checked the files and recommend tightening the hero spacing next."))
