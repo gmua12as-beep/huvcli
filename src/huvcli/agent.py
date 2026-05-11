@@ -7,6 +7,7 @@ from typing import Any
 from .provider import ApiClient
 from .storage import append_history, ensure_workspace
 from .tools import ToolContext, call_tool
+from .ui import UI
 
 
 SYSTEM_PROMPT = """You are Huv, a CLI coding agent.
@@ -79,6 +80,16 @@ def _status_for(tool: str) -> str:
     }.get(tool, "Working...")
 
 
+def _status_kind(tool: str) -> str:
+    return {
+        "list_files": "files",
+        "read_file": "read",
+        "apply_patch": "edit",
+        "write_file": "write",
+        "run_command": "run",
+    }.get(tool, "think")
+
+
 def _result_summary(tool: str, result: str) -> str:
     first = result.strip().splitlines()[0] if result.strip() else "done"
     if tool == "list_files":
@@ -117,8 +128,10 @@ def run_agent(
     max_steps: int = 30,
     verbose: bool = False,
     save: bool = True,
+    plain: bool = False,
 ) -> str:
     client = ApiClient()
+    ui = UI(plain=plain)
     ctx = ToolContext(cwd=cwd, yes=yes, verbose=verbose)
     prefs = ensure_workspace(cwd)
     if not save:
@@ -144,7 +157,7 @@ def run_agent(
         if action.get("action") == "final":
             answer = str(action.get("text", ""))
             if _is_bad_final(answer):
-                print("Planning summary...")
+                print(ui.status("Planning summary...", "think"))
                 messages.append(
                     {
                         "role": "user",
@@ -163,7 +176,7 @@ def run_agent(
             append_history(cwd, prompt, answer, tool_log, prefs)
             return answer
         tool_name = str(action["tool"])
-        print(_status_for(tool_name))
+        print(ui.status(_status_for(tool_name), _status_kind(tool_name)))
         try:
             result = call_tool(ctx, tool_name, dict(action.get("args") or {}))
         except Exception as exc:
@@ -172,7 +185,7 @@ def run_agent(
             print(f"\n[{tool_name}]\n{result[:4000]}\n")
         else:
             summary = _result_summary(tool_name, result)
-            print(summary)
+            print(ui.result(summary, ok=not summary.lower().startswith(("tool error", "command blocked"))))
         tool_log.append({"tool": tool_name, "summary": _result_summary(tool_name, result)})
         messages.append({"role": "user", "content": f"Tool result:\n{result}"})
     answer = "Stopped: max steps reached"

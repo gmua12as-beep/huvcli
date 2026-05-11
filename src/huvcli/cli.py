@@ -9,10 +9,12 @@ from .agent import run_agent
 from .assets import assets_root, list_asset_skills
 from .provider import ApiClient
 from .storage import ensure_workspace, recent_history, set_pref
+from .ui import UI
 
 
-def _chat(yes: bool, verbose: bool, save: bool) -> int:
-    print("Huv chat. Ctrl+C to exit.")
+def _chat(yes: bool, verbose: bool, save: bool, plain: bool) -> int:
+    ui = UI(plain=plain)
+    print(ui.welcome(Path.cwd(), save=save))
     while True:
         try:
             prompt = input("\nhuv> ").strip()
@@ -23,7 +25,8 @@ def _chat(yes: bool, verbose: bool, save: bool) -> int:
             continue
         if prompt.lower() in {"exit", "quit"}:
             return 0
-        print(run_agent(prompt, Path.cwd(), yes=yes, verbose=verbose, save=save))
+        answer = run_agent(prompt, Path.cwd(), yes=yes, verbose=verbose, save=save, plain=plain)
+        print(ui.answer(answer))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,13 +34,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("prompt", nargs="*", help="Task for the agent, or 'chat'/'models'/'assets'/'history'/'prefs'")
     parser.add_argument("--yes", "-y", action="store_true", help="approve file writes and commands")
     parser.add_argument("--verbose", "-v", action="store_true", help="show raw tool output")
+    parser.add_argument("--plain", action="store_true", help="disable colors and visual framing")
     parser.add_argument("--no-save", action="store_true", help="do not save this conversation to .huvcli")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args(argv)
 
     words = args.prompt
     if not words or words == ["chat"]:
-        return _chat(args.yes, args.verbose, not args.no_save)
+        return _chat(args.yes, args.verbose, not args.no_save, args.plain)
     if words == ["models"]:
         try:
             print(json.dumps(ApiClient().list_models(), indent=2, ensure_ascii=False))
@@ -66,8 +70,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     prompt = " ".join(words)
+    ui = UI(plain=args.plain)
     try:
-        print(run_agent(prompt, Path.cwd(), yes=args.yes, verbose=args.verbose, save=not args.no_save))
+        answer = run_agent(
+            prompt,
+            Path.cwd(),
+            yes=args.yes,
+            verbose=args.verbose,
+            save=not args.no_save,
+            plain=args.plain,
+        )
+        print(ui.answer(answer))
         return 0
     except Exception as exc:
         print(f"Error: {exc}")
