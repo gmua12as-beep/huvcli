@@ -46,6 +46,9 @@ By default, file writes and shell commands ask before running.
 huv --yes "add tests for this package"
 ```
 
+Normal output is quiet: you will see short statuses such as `Checking files...`
+and `Editing...`, not full file contents. Use `--verbose` when debugging.
+
 The agent prefers small unified-diff patches for edits. Commands that look
 destructive are blocked unless the model explicitly marks them as intentional.
 

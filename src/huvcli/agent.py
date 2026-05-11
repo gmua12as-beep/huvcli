@@ -67,9 +67,33 @@ def _parse_action(text: str) -> dict[str, Any]:
     return action
 
 
-def run_agent(prompt: str, cwd: Path, yes: bool = False, max_steps: int = 30) -> str:
+def _status_for(tool: str) -> str:
+    return {
+        "list_files": "Checking files...",
+        "read_file": "Reading context...",
+        "apply_patch": "Editing...",
+        "write_file": "Writing...",
+        "run_command": "Running check...",
+    }.get(tool, "Working...")
+
+
+def _result_summary(tool: str, result: str) -> str:
+    first = result.strip().splitlines()[0] if result.strip() else "done"
+    if tool == "list_files":
+        count = len([line for line in result.splitlines() if line and line != "...truncated"])
+        return f"Found {count} files."
+    if tool == "read_file":
+        return "Read file."
+    if tool in {"apply_patch", "write_file"}:
+        return first
+    if tool == "run_command":
+        return first
+    return "Done."
+
+
+def run_agent(prompt: str, cwd: Path, yes: bool = False, max_steps: int = 30, verbose: bool = False) -> str:
     client = ApiClient()
-    ctx = ToolContext(cwd=cwd, yes=yes)
+    ctx = ToolContext(cwd=cwd, yes=yes, verbose=verbose)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT + _project_guidance(cwd)},
         {"role": "user", "content": prompt},
@@ -91,10 +115,15 @@ def run_agent(prompt: str, cwd: Path, yes: bool = False, max_steps: int = 30) ->
             return str(action.get("text", ""))
         if action.get("action") != "tool":
             return f"Unknown action: {reply}"
+        tool_name = str(action["tool"])
+        print(_status_for(tool_name))
         try:
-            result = call_tool(ctx, str(action["tool"]), dict(action.get("args") or {}))
+            result = call_tool(ctx, tool_name, dict(action.get("args") or {}))
         except Exception as exc:
             result = f"Tool error: {exc}"
-        print(f"\n[{action['tool']}]\n{result[:4000]}\n")
+        if verbose:
+            print(f"\n[{tool_name}]\n{result[:4000]}\n")
+        else:
+            print(_result_summary(tool_name, result))
         messages.append({"role": "user", "content": f"Tool result:\n{result}"})
     return "Stopped: max steps reached"

@@ -13,6 +13,7 @@ from typing import Any
 class ToolContext:
     cwd: Path
     yes: bool = False
+    verbose: bool = False
 
 
 def _project_path(ctx: ToolContext, value: str) -> Path:
@@ -65,7 +66,7 @@ def write_file(ctx: ToolContext, path: str, content: str) -> str:
             lineterm="",
         )
     )
-    if diff:
+    if diff and ctx.verbose:
         print(diff[:12000])
     if not _confirm(ctx, f"Write {path}?"):
         return "Write cancelled"
@@ -199,7 +200,8 @@ def apply_patch(ctx: ToolContext, patch: str) -> str:
         changes.append((target, new_lines))
     if not changes:
         raise ValueError("No unified diff found")
-    print(patch[:12000])
+    if ctx.verbose:
+        print(patch[:12000])
     if not _confirm(ctx, f"Apply patch to {len(changes)} file(s)?"):
         return "Patch cancelled"
     results: list[str] = []
