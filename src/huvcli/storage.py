@@ -26,6 +26,29 @@ def history_path(cwd: Path) -> Path:
     return workspace_dir(cwd) / "conversations.jsonl"
 
 
+def conversation_path(cwd: Path) -> Path:
+    return workspace_dir(cwd) / "last_conversation.json"
+
+
+def save_conversation(cwd: Path, messages: list[dict[str, Any]]) -> None:
+    # Drop system message — agent re-prepends fresh one on resume.
+    payload = [m for m in messages if m.get("role") != "system"]
+    path = conversation_path(cwd)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_conversation(cwd: Path) -> list[dict[str, Any]]:
+    path = conversation_path(cwd)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
 def load_prefs(cwd: Path) -> dict[str, Any]:
     path = prefs_path(cwd)
     if not path.exists():
