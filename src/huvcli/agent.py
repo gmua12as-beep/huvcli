@@ -24,6 +24,7 @@ Tool guidelines:
 - run_command for tests/builds. Set dangerous=true only when intentional.
 - Keep changes minimal. After editing, run the relevant tests/build to verify.
 - Final answer must be concrete: what you found, what you changed, how to verify. No placeholder text.
+- Do NOT emit `<think>` blocks or `<tool_call>` / `<minimax:tool_call>` XML in your reply. Use the provided function-calling interface for tool invocations. If you must reason, keep it brief and inline — never inside tags.
 """
 
 
@@ -37,6 +38,60 @@ def _project_guidance(cwd: Path) -> str:
     if not parts:
         return ""
     return "\n\nProject guidance:\n" + "\n\n".join(parts)
+
+
+import re as _re
+
+_THINK_RE = _re.compile(r"<think\b[^>]*>.*?</think>", _re.IGNORECASE | _re.DOTALL)
+_TOOL_BLOCK_RE = _re.compile(
+    r"<(?:[a-z]+:)?tool_call\b[^>]*>(.*?)</(?:[a-z]+:)?tool_call>",
+    _re.IGNORECASE | _re.DOTALL,
+)
+_INVOKE_RE = _re.compile(
+    r'<invoke\s+name="([^"]+)"\s*>(.*?)</invoke>',
+    _re.IGNORECASE | _re.DOTALL,
+)
+_PARAM_RE = _re.compile(
+    r'<parameter\s+name="([^"]+)"\s*>(.*?)</parameter>',
+    _re.IGNORECASE | _re.DOTALL,
+)
+
+
+def _strip_think(text: str) -> str:
+    return _THINK_RE.sub("", text).strip()
+
+
+def _coerce_param(value: str) -> Any:
+    """Heuristically convert XML parameter text into a Python value."""
+    v = value.strip()
+    if v in {"true", "True"}:
+        return True
+    if v in {"false", "False"}:
+        return False
+    if v.lstrip("-").isdigit():
+        try:
+            return int(v)
+        except ValueError:
+            return value
+    # Keep verbatim string (preserves whitespace inside content blocks).
+    return value
+
+
+def _parse_xml_tool_calls(text: str) -> list[dict[str, Any]]:
+    """Parse MiniMax-style `<minimax:tool_call><invoke name="..."><parameter ...>` blocks.
+
+    Returns the same shape as native tool_calls: [{id, name, args}].
+    """
+    calls: list[dict[str, Any]] = []
+    counter = 0
+    for block in _TOOL_BLOCK_RE.findall(text):
+        for name, inner in _INVOKE_RE.findall(block):
+            args: dict[str, Any] = {}
+            for pname, pvalue in _PARAM_RE.findall(inner):
+                args[pname] = _coerce_param(pvalue)
+            counter += 1
+            calls.append({"id": f"xml_{counter}", "name": name.strip(), "args": args})
+    return calls
 
 
 def _extract_json_object(text: str) -> str:
@@ -187,11 +242,17 @@ def run_agent(
         return prefix + result
 
     def _finalize(answer: str) -> str:
+        answer = _strip_think(answer)
+        if ctx.changes:
+            print(ui.changed_files(ctx.changes))
         append_history(cwd, prompt, answer, tool_log, prefs)
         if save:
             save_conversation(cwd, messages)
         if hooks:
-            run_hooks(cwd, hooks, "stop", {"prompt": prompt, "answer": answer, "tools": tool_log})
+            run_hooks(
+                cwd, hooks, "stop",
+                {"prompt": prompt, "answer": answer, "tools": tool_log, "changes": ctx.changes},
+            )
         mcp.close_all()
         return answer
 
@@ -204,6 +265,38 @@ def run_agent(
         reply = client.complete(messages, tools=all_schemas if use_native_tools else None)
         text = reply.get("text", "")
         tool_calls = reply.get("tool_calls") or []
+
+        # Fallback: some models (MiniMax) emit tool calls as XML inside text
+        # instead of using native function-calling. Parse + execute them
+        # without trying to round-trip through the API's tool_calls schema
+        # (the provider didn't produce structured calls, so we shouldn't
+        # fabricate them in the message history).
+        xml_calls: list[dict[str, Any]] = []
+        if not tool_calls and text and "<" in text:
+            xml_calls = _parse_xml_tool_calls(text)
+
+        if xml_calls:
+            # Record the assistant turn as plain text (XML + think stripped).
+            cleaned = _strip_think(_TOOL_BLOCK_RE.sub("", text))
+            messages.append({"role": "assistant", "content": cleaned or None})
+            for tc in xml_calls:
+                name = tc["name"]
+                label, kind = _STATUS.get(name, ("Working...", "think"))
+                print(ui.status(label, kind))
+                result = _run_tool(name, dict(tc["args"] or {}))
+                summary = _result_summary(name, result)
+                ok = not summary.lower().startswith(("tool error", "command blocked"))
+                if verbose:
+                    print(ui.tool_call(name, summary, ok=ok))
+                    print(ui.dim(result[:4000]))
+                elif name == "update_plan" and ctx.plan:
+                    print(ui.tool_call(name, "plan updated", ok=ok))
+                    print(ui.plan(ctx.plan))
+                else:
+                    print(ui.tool_call(name, summary, ok=ok))
+                tool_log.append({"tool": name, "summary": summary})
+                messages.append({"role": "user", "content": f"Tool result ({name}):\n{result[:24000]}"})
+            continue
 
         if tool_calls:
             # Native function-calling path.

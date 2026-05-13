@@ -340,6 +340,48 @@ class UI:
         arrow = "▸" if self.unicode_ok else ">"
         return f"{self.accent(arrow)} "
 
+    def changed_files(self, changes: dict[str, dict]) -> str:
+        """Render a per-session change summary.
+
+        changes: {rel_path: {action: added|modified|deleted, adds: int, dels: int}}
+        """
+        if not changes:
+            return ""
+        action_glyph = {
+            "added":    ("A", self.good),
+            "modified": ("M", self.warn),
+            "deleted":  ("D", self.bad),
+        }
+        action_glyph_ascii = {"added": "A", "modified": "M", "deleted": "D"}
+        rows: list[str] = []
+        totals_adds = sum(int(c.get("adds", 0)) for c in changes.values())
+        totals_dels = sum(int(c.get("dels", 0)) for c in changes.values())
+        for path in sorted(changes):
+            entry = changes[path]
+            action = entry.get("action", "modified")
+            adds = int(entry.get("adds", 0))
+            dels = int(entry.get("dels", 0))
+            stats = ""
+            if action != "deleted" and (adds or dels):
+                if self.plain:
+                    stats = f"  +{adds}/-{dels}"
+                else:
+                    stats = "  " + self.good(f"+{adds}") + self.grey("/") + self.bad(f"-{dels}")
+            if self.plain:
+                tag = action_glyph_ascii.get(action, "M")
+                rows.append(f"  [{tag}] {path}{stats}")
+            else:
+                tag, paint = action_glyph.get(action, ("M", self.warn))
+                rows.append(f"  {paint(tag)} {path}{stats}")
+        if self.plain:
+            footer = f"  {len(changes)} file(s), +{totals_adds}/-{totals_dels}"
+        else:
+            footer = (
+                "  " + self.dim(f"{len(changes)} file(s)") + self.grey(" · ")
+                + self.good(f"+{totals_adds}") + self.grey("/") + self.bad(f"-{totals_dels}")
+            )
+        return "\n".join([self.section("Files changed"), *rows, footer])
+
     def hint_bar(self, approval: str, model: str | None, mcp_count: int = 0) -> str:
         """Single-line status row above the prompt."""
         if self.plain:

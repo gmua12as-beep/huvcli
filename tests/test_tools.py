@@ -244,6 +244,56 @@ class UpdatePlanTests(unittest.TestCase):
             self.assertEqual(ctx.plan[0]["status"], "pending")
 
 
+class ChangeTrackingTests(unittest.TestCase):
+    def test_write_file_records_added(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ctx = _ctx(root)
+            from huvcli.tools import write_file
+            write_file(ctx, "new.txt", "alpha\nbeta\n")
+            self.assertIn("new.txt", ctx.changes)
+            self.assertEqual(ctx.changes["new.txt"]["action"], "added")
+            self.assertEqual(ctx.changes["new.txt"]["adds"], 2)
+
+    def test_edit_file_records_modified_with_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "a.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+            ctx = _ctx(root)
+            read_file(ctx, "a.py")
+            edit_file(ctx, "a.py", "two", "TWO")
+            entry = ctx.changes["a.py"]
+            self.assertEqual(entry["action"], "modified")
+            self.assertEqual(entry["adds"], 1)
+            self.assertEqual(entry["dels"], 1)
+
+    def test_apply_patch_records_added_and_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ctx = _ctx(root)
+            apply_patch(
+                ctx,
+                "--- /dev/null\n+++ new.txt\n@@ -0,0 +1,2 @@\n+alpha\n+beta\n",
+            )
+            self.assertEqual(ctx.changes["new.txt"]["action"], "added")
+            # Now delete it via patch.
+            apply_patch(
+                ctx,
+                "--- new.txt\n+++ /dev/null\n",
+            )
+            self.assertEqual(ctx.changes["new.txt"]["action"], "deleted")
+
+    def test_added_stays_added_on_subsequent_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ctx = _ctx(root)
+            from huvcli.tools import write_file
+            write_file(ctx, "n.txt", "x\n")
+            read_file(ctx, "n.txt")
+            edit_file(ctx, "n.txt", "x", "y")
+            self.assertEqual(ctx.changes["n.txt"]["action"], "added")
+
+
 class ListFilesTests(unittest.TestCase):
     def test_skips_known_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

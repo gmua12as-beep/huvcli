@@ -67,6 +67,26 @@ class UITests(unittest.TestCase):
         self.assertIn("[!]", ui.error("oops"))
         self.assertIn("[i]", ui.info("hi"))
 
+    def test_changed_files_plain_empty(self) -> None:
+        ui = UI(plain=True)
+        self.assertEqual(ui.changed_files({}), "")
+
+    def test_changed_files_plain_renders_actions_and_counts(self) -> None:
+        ui = UI(plain=True)
+        out = ui.changed_files({
+            "src/a.py": {"action": "added",    "adds": 10, "dels": 0},
+            "src/b.py": {"action": "modified", "adds": 3,  "dels": 2},
+            "old.txt":  {"action": "deleted",  "adds": 0,  "dels": 0},
+        })
+        self.assertIn("Files changed", out)
+        self.assertIn("[A] src/a.py", out)
+        self.assertIn("+10/-0", out)
+        self.assertIn("[M] src/b.py", out)
+        self.assertIn("+3/-2", out)
+        self.assertIn("[D] old.txt", out)
+        self.assertIn("3 file(s)", out)
+        self.assertIn("+13/-2", out)
+
     def test_hint_bar_plain(self) -> None:
         ui = UI(plain=True)
         bar = ui.hint_bar("auto-edit", "gpt-x", 2)

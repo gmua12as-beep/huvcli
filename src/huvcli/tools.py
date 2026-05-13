@@ -46,6 +46,35 @@ class ToolContext:
     read_state: dict[str, tuple[float, int]] = field(default_factory=dict)
     # Plan store (codex `update_plan` style).
     plan: list[dict[str, str]] = field(default_factory=list)
+    # File changes this session: rel_path -> {action, adds, dels}.
+    # action ∈ {"added", "modified", "deleted"}.
+    changes: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+def _record_change(ctx: ToolContext, target: Path, action: str, adds: int = 0, dels: int = 0) -> None:
+    key = _rel(ctx, target)
+    prior = ctx.changes.get(key)
+    if prior:
+        # Once "added", stay "added" even on subsequent edits.
+        if prior["action"] == "added" and action == "modified":
+            action = "added"
+        # Once "deleted", that's terminal.
+        if prior["action"] == "deleted":
+            action = "deleted"
+        adds += prior.get("adds", 0)
+        dels += prior.get("dels", 0)
+    ctx.changes[key] = {"action": action, "adds": adds, "dels": dels}
+
+
+def _diff_counts(old: str, new: str) -> tuple[int, int]:
+    """Cheap +/- line counts via difflib."""
+    adds = dels = 0
+    for line in difflib.unified_diff(old.splitlines(), new.splitlines(), n=0, lineterm=""):
+        if line.startswith("+") and not line.startswith("+++"):
+            adds += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            dels += 1
+    return adds, dels
 
 
 def _project_path(ctx: ToolContext, value: str) -> Path:
@@ -249,9 +278,8 @@ def read_file(ctx: ToolContext, path: str, offset: int = 0, limit: int = 2000, m
 
 def write_file(ctx: ToolContext, path: str, content: str) -> str:
     target = _project_path(ctx, path)
-    old = ""
-    if target.exists():
-        old = target.read_text(encoding="utf-8", errors="replace")
+    existed = target.exists()
+    old = target.read_text(encoding="utf-8", errors="replace") if existed else ""
     diff = "\n".join(
         difflib.unified_diff(
             old.splitlines(), content.splitlines(),
@@ -265,6 +293,8 @@ def write_file(ctx: ToolContext, path: str, content: str) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     _record_read(ctx, target)
+    adds, dels = _diff_counts(old, content)
+    _record_change(ctx, target, "added" if not existed else "modified", adds, dels)
     return f"Wrote {path}"
 
 
@@ -325,6 +355,8 @@ def edit_file(ctx: ToolContext, path: str, old_string: str, new_string: str, rep
         out = out[: -len(newline)]
     target.write_bytes(out.encode("utf-8"))
     _record_read(ctx, target)
+    adds, dels = _diff_counts(norm, new_norm)
+    _record_change(ctx, target, "modified", adds, dels)
     return f"Edited {path} ({n_changed} replacement{'s' if n_changed != 1 else ''})"
 
 
@@ -572,12 +604,19 @@ def apply_patch(ctx: ToolContext, patch: str) -> str:
     results: list[str] = []
     for target, lines, newline, trailing in changes:
         if lines is None:
-            if target.exists():
+            existed = target.exists()
+            if existed:
                 target.unlink()
+            _record_change(ctx, target, "deleted")
             results.append(f"Deleted {_rel(ctx, target)}")
             continue
+        existed = target.exists()
+        old_text = target.read_text(encoding="utf-8", errors="replace") if existed else ""
         _write_text_preserving(target, lines, newline, trailing)
         _record_read(ctx, target)
+        new_text = "\n".join(lines)
+        adds, dels = _diff_counts(old_text, new_text)
+        _record_change(ctx, target, "added" if not existed else "modified", adds, dels)
         results.append(f"Patched {_rel(ctx, target)}")
     return "\n".join(results)
 
