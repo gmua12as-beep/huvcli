@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import threading
+import time
 from pathlib import Path
 
 from . import __version__
@@ -223,6 +225,8 @@ class UI:
             return self.yellow(text)
         if approval == "full-auto":
             return self.red(text)
+        if approval == "plan":
+            return self.magenta(text)
         return text
 
     def status(self, label: str, kind: str = "think") -> str:
@@ -328,6 +332,11 @@ class UI:
             return f"[!] {message}"
         return f"  {self.bad(self.glyph('error'))} {self.bad(message)}"
 
+    def warning(self, message: str) -> str:
+        if self.plain:
+            return f"[!] {message}"
+        return f"  {self.warn(self.glyph('warn'))} {self.warn(message)}"
+
     def info(self, message: str) -> str:
         if self.plain:
             return f"[i] {message}"
@@ -382,6 +391,15 @@ class UI:
             )
         return "\n".join([self.section("Files changed"), *rows, footer])
 
+    def spinner(self, label: str = "Thinking..."):
+        """Context manager that animates a spinner on a background thread.
+
+        Auto-disables on plain mode or non-tty. Clears its line on exit.
+        Shows an elapsed-seconds counter after 3s so the user knows the
+        wait isn't stuck.
+        """
+        return _Spinner(self, label)
+
     def hint_bar(self, approval: str, model: str | None, mcp_count: int = 0) -> str:
         """Single-line status row above the prompt."""
         if self.plain:
@@ -393,3 +411,64 @@ class UI:
         if mcp_count:
             bits.append(f"{self.grey('mcp')} {self.magenta(str(mcp_count))}")
         return "  ".join(bits)
+
+
+class _Spinner:
+    UNICODE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    ASCII_FRAMES = ["|", "/", "-", "\\"]
+
+    def __init__(self, ui: "UI", label: str) -> None:
+        self.ui = ui
+        self.label = label
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._enabled = (
+            not ui.plain
+            and sys.stdout.isatty()
+            and not os.environ.get("HUV_NO_SPINNER")
+        )
+        self._frames = self.UNICODE_FRAMES if ui.unicode_ok else self.ASCII_FRAMES
+
+    def update(self, label: str) -> None:
+        """Change the label mid-flight (e.g. during a long tool run)."""
+        self.label = label
+
+    def _render(self, frame: str, elapsed: float) -> str:
+        suffix = ""
+        if elapsed >= 3.0:
+            secs = int(elapsed)
+            suffix = self.ui.dim(f"  ({secs}s)")
+        return f"  {self.ui.accent(frame)} {self.ui.dim(self.label)}{suffix}"
+
+    def _run(self) -> None:
+        start = time.monotonic()
+        i = 0
+        try:
+            while not self._stop.is_set():
+                frame = self._frames[i % len(self._frames)]
+                line = self._render(frame, time.monotonic() - start)
+                sys.stdout.write("\r" + line)
+                sys.stdout.flush()
+                i += 1
+                self._stop.wait(0.1)
+        except Exception:  # noqa: BLE001
+            pass  # spinner must never break the host call
+
+    def __enter__(self) -> "_Spinner":
+        if self._enabled:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:  # noqa: ANN002
+        if not self._enabled:
+            return
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+        # Clear the spinner line.
+        try:
+            sys.stdout.write("\r\x1b[2K")
+            sys.stdout.flush()
+        except Exception:  # noqa: BLE001
+            pass

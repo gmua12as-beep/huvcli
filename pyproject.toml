@@ -9,7 +9,11 @@ description = "A small CLI coding agent."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "huvcli" }]
-dependencies = []
+dependencies = [
+    # Windows lacks stdlib readline — pyreadline3 fills it in so tab
+    # completion works out of the box.
+    "pyreadline3>=3.4; sys_platform == 'win32'",
+]
 
 [project.scripts]
 huv = "huvcli.cli:main"
@@ -19,3 +23,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 huvcli = ["agent_assets/**/*"]
+"huvcli.tools" = ["*.md"]

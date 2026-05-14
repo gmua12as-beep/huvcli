@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -24,7 +25,7 @@ _MODELS = [6, 68, 70, 77, 76, 69, 90]
 class ApiConfig:
     model: str = os.environ.get("HUV_MODEL", "MiniMax-M2.7")
     api_key: str | None = os.environ.get("HUV_API_KEY") or None
-    timeout: int = int(os.environ.get("HUV_TIMEOUT", "120"))
+    timeout: int = int(os.environ.get("HUV_TIMEOUT", "300"))
     api_style: str = os.environ.get("HUV_API_STYLE", "chat")
     max_tokens: int = int(os.environ.get("HUV_MAX_TOKENS", "4096"))
     use_tools: bool = os.environ.get("HUV_USE_TOOLS", "1") not in {"0", "false", "False"}
@@ -136,9 +137,28 @@ class ApiClient:
                     continue
                 raise RuntimeError(f"API HTTP {exc.code}: {detail}") from exc
             except urllib.error.URLError as exc:
+                # Socket-level timeout is wrapped here on some platforms.
                 if attempt < self.config.max_retries:
                     delay = min(2 ** attempt, 8)
                     time.sleep(delay)
                     attempt += 1
                     continue
                 raise RuntimeError(f"API connection failed: {exc.reason}") from exc
+            except (TimeoutError, socket.timeout) as exc:
+                # SSL/socket read timeout bypasses URLError on Py3.10+.
+                if attempt < self.config.max_retries:
+                    delay = min(2 ** attempt, 8)
+                    time.sleep(delay)
+                    attempt += 1
+                    continue
+                raise RuntimeError(
+                    f"API read timed out after {self.config.timeout}s "
+                    f"(set HUV_TIMEOUT higher or shrink the prompt)"
+                ) from exc
+            except (ConnectionResetError, ConnectionAbortedError, OSError) as exc:
+                if attempt < self.config.max_retries:
+                    delay = min(2 ** attempt, 8)
+                    time.sleep(delay)
+                    attempt += 1
+                    continue
+                raise RuntimeError(f"API I/O failed: {exc}") from exc

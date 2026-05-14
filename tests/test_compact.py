@@ -79,3 +79,20 @@ class CompactTests(unittest.TestCase):
         msgs = [_msg("user", "x" * 100)]
         self.assertFalse(needs_compaction(msgs, threshold=200))
         self.assertTrue(needs_compaction(msgs, threshold=50))
+
+    def test_default_threshold_handles_100k_token_chats(self) -> None:
+        # Modern providers handle 100k+ tokens (~400k chars) without trouble.
+        # We compact only when truly oversized.
+        from huvcli.compact import COMPACT_THRESHOLD_CHARS
+        self.assertGreaterEqual(COMPACT_THRESHOLD_CHARS, 400_000)
+
+
+class SessionStatsTests(unittest.TestCase):
+    def test_session_state_records_history_chars(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from huvcli.agent import SessionState
+        with tempfile.TemporaryDirectory() as raw:
+            s = SessionState(cwd=Path(raw))
+            self.assertEqual(s.last_history_chars, 0)
+            self.assertEqual(s.compactions, 0)

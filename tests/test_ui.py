@@ -87,6 +87,26 @@ class UITests(unittest.TestCase):
         self.assertIn("3 file(s)", out)
         self.assertIn("+13/-2", out)
 
+    def test_spinner_noop_in_plain_mode(self) -> None:
+        ui = UI(plain=True)
+        with ui.spinner("Working...") as sp:
+            self.assertFalse(sp._enabled)
+        # No thread spawned, no exception.
+
+    def test_spinner_threaded_runs_and_stops(self) -> None:
+        import sys
+        from huvcli.ui import _Spinner
+        ui = UI(plain=False)
+        ui.plain = False
+        # Force enable regardless of tty.
+        sp = _Spinner(ui, "Test...")
+        sp._enabled = True
+        with sp:
+            import time
+            time.sleep(0.05)
+        # Thread cleaned up.
+        self.assertTrue(sp._stop.is_set())
+
     def test_hint_bar_plain(self) -> None:
         ui = UI(plain=True)
         bar = ui.hint_bar("auto-edit", "gpt-x", 2)

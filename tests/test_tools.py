@@ -8,11 +8,13 @@ from pathlib import Path
 from huvcli.tools import (
     ToolContext,
     apply_patch,
+    call_tool,
     edit_file,
     glob_files,
     grep,
     list_files,
     read_file,
+    read_files,
     run_command,
     update_plan,
 )
@@ -150,6 +152,36 @@ class EditFileTests(unittest.TestCase):
             edit_file(ctx, "a.py", "foo", "X", replace_all=True)
             self.assertEqual((root / "a.py").read_text(encoding="utf-8"), "X\nX\nbar\n")
 
+    def test_rejects_oversized_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "a.tsx"
+            # Build a real 600-line file so freshness + locate succeed.
+            lines = ["// line " + str(i) for i in range(1, 601)]
+            target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            ctx = _ctx(root)
+            read_file(ctx, "a.tsx")
+            big_old = "\n".join(lines[:300])
+            big_new = "\n".join(["// NEW " + str(i) for i in range(1, 301)])
+            with self.assertRaises(ValueError) as cm:
+                edit_file(ctx, "a.tsx", big_old, big_new)
+            msg = str(cm.exception)
+            self.assertIn("too much scope", msg)
+            self.assertIn("smaller targeted edits", msg)
+
+    def test_oversized_edit_allowed_with_replace_all(self) -> None:
+        # replace_all is the explicit "I know what I'm doing" override.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "a.tsx"
+            target.write_text("foo\n" * 500, encoding="utf-8")
+            ctx = _ctx(root)
+            read_file(ctx, "a.tsx")
+            # 500 occurrences of foo → still over limit lines-wise but
+            # replace_all signals intentional sweep.
+            edit_file(ctx, "a.tsx", "foo", "bar", replace_all=True)
+            self.assertEqual((root / "a.tsx").read_text(encoding="utf-8"), "bar\n" * 500)
+
     def test_preserves_crlf_and_no_trailing_newline(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -242,6 +274,148 @@ class UpdatePlanTests(unittest.TestCase):
             ctx = _ctx(Path(raw))
             update_plan(ctx, [{"step": "x", "status": "bogus"}])
             self.assertEqual(ctx.plan[0]["status"], "pending")
+
+
+class ReadFilesTests(unittest.TestCase):
+    def test_batch_read_returns_one_block_per_file(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "a.txt").write_text("hello\n", encoding="utf-8")
+            (root / "b.txt").write_text("world\n", encoding="utf-8")
+            ctx = _ctx(root)
+            out = read_files(ctx, ["a.txt", "b.txt"])
+            self.assertIn("[a.txt] lines 1-1 of 1", out)
+            self.assertIn("[b.txt] lines 1-1 of 1", out)
+            self.assertIn("hello", out)
+            self.assertIn("world", out)
+
+    def test_batch_read_records_each_file_for_freshness(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "a.txt").write_text("aa\n", encoding="utf-8")
+            (root / "b.txt").write_text("bb\n", encoding="utf-8")
+            ctx = _ctx(root)
+            read_files(ctx, ["a.txt", "b.txt"])
+            # Editing either is allowed now.
+            edit_file(ctx, "a.txt", "aa", "AA")
+            edit_file(ctx, "b.txt", "bb", "BB")
+
+    def test_batch_read_inlines_per_file_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "ok.txt").write_text("good\n", encoding="utf-8")
+            ctx = _ctx(root)
+            out = read_files(ctx, ["ok.txt", "missing.txt"])
+            self.assertIn("good", out)
+            self.assertIn("missing.txt", out)
+            self.assertIn("ERROR", out)
+
+
+class ArgNormalizationTests(unittest.TestCase):
+    def test_path_alias_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "a.txt").write_text("hi\n", encoding="utf-8")
+            ctx = _ctx(root)
+            # Model sends `file_path` instead of `path`.
+            out = call_tool(ctx, "read_file", {"file_path": "a.txt"})
+            self.assertIn("hi", out)
+
+    def test_write_content_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ctx = _ctx(root)
+            # `text` alias for content, `filename` for path.
+            call_tool(ctx, "write_file", {"filename": "out.txt", "text": "hello"})
+            self.assertEqual((root / "out.txt").read_text(encoding="utf-8"), "hello")
+
+    def test_missing_required_arg_has_helpful_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            ctx = _ctx(Path(raw))
+            with self.assertRaises(ValueError) as cm:
+                call_tool(ctx, "write_file", {"path": "x.txt"})  # missing content
+            msg = str(cm.exception)
+            self.assertIn("missing required arg", msg)
+            self.assertIn("content", msg)
+
+    def test_read_files_accepts_single_string(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "a.txt").write_text("hi\n", encoding="utf-8")
+            ctx = _ctx(root)
+            # Model sent `paths` as a string, not list.
+            out = call_tool(ctx, "read_files", {"paths": "a.txt"})
+            self.assertIn("hi", out)
+
+    def test_empty_args_error_includes_example(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            ctx = _ctx(Path(raw))
+            with self.assertRaises(ValueError) as cm:
+                call_tool(ctx, "write_file", {})
+            msg = str(cm.exception)
+            self.assertIn("NO arguments", msg)
+            self.assertIn("Example", msg)
+            self.assertIn("path", msg)
+            self.assertIn("content", msg)
+
+    def test_partial_args_error_includes_example(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            ctx = _ctx(Path(raw))
+            with self.assertRaises(ValueError) as cm:
+                call_tool(ctx, "edit_file", {"path": "x"})  # missing old/new
+            msg = str(cm.exception)
+            self.assertIn("Example", msg)
+            self.assertIn("old_string", msg)
+
+    def test_apply_patch_error_message_is_actionable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            ctx = _ctx(Path(raw))
+            with self.assertRaises(ValueError) as cm:
+                apply_patch(ctx, "this is not a diff")
+            self.assertIn("unified-diff form", str(cm.exception))
+            self.assertIn("edit_file", str(cm.exception))
+
+
+class HardeningTests(unittest.TestCase):
+    def test_read_file_rejects_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "sub").mkdir()
+            ctx = _ctx(root)
+            with self.assertRaises(ValueError) as cm:
+                read_file(ctx, "sub")
+            self.assertIn("directory", str(cm.exception))
+
+    def test_read_file_rejects_huge_files(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "big.bin"
+            # Create sparse-ish 11 MB file.
+            with target.open("wb") as f:
+                f.seek(11 * 1024 * 1024)
+                f.write(b"x")
+            ctx = _ctx(root)
+            with self.assertRaises(ValueError) as cm:
+                read_file(ctx, "big.bin")
+            self.assertIn("too large", str(cm.exception))
+
+    def test_grep_skips_binary_files(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "a.py").write_text("NEEDLE in text\n", encoding="utf-8")
+            (root / "img.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"NEEDLE" * 100)
+            (root / "blob.bin").write_bytes(b"NEEDLE\x00more")
+            ctx = _ctx(root)
+            out = grep(ctx, "NEEDLE")
+            self.assertIn("a.py", out)
+            self.assertNotIn("img.png", out)
+            self.assertNotIn("blob.bin", out)
+
+    def test_grep_bad_regex_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            ctx = _ctx(Path(raw))
+            with self.assertRaises(ValueError):
+                grep(ctx, "[unterminated")
 
 
 class ChangeTrackingTests(unittest.TestCase):
